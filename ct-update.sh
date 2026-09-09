@@ -1,8 +1,12 @@
-
 #!/usr/bin/env bash
 
 # Default mode
 MODE=""
+
+# Counters for summary
+CONTAINERS_PROCESSED=0
+CONTAINERS_FAILED=0
+CONTAINERS_SKIPPED=0
 
 # Parse arguments
 while [[ "$#" -gt 0 ]]; do
@@ -51,6 +55,17 @@ confirm_action() {
 }
 
 for CTID in $RUNNING_CT; do
+    # Check if container is reachable
+    if ! pct exec $CTID -- true &>/dev/null; then
+        echo ""
+        echo "=========================================================================="
+        echo " >>> CONTAINER ID $CTID - UNREACHABLE <<<"
+        echo "=========================================================================="
+        echo "[Error] Container $CTID is not responding. Skipping..."
+        CONTAINERS_FAILED=$((CONTAINERS_FAILED + 1))
+        continue
+    fi
+
     CT_NAME=$(pct config $CTID | grep "hostname:" | awk '{print $2}')
     echo ""
     echo "=========================================================================="
@@ -95,7 +110,7 @@ for CTID in $RUNNING_CT; do
         pct exec $CTID -- apk update &>/dev/null
         
         # Extract and format the list of pending Alpine upgrades
-        UPGRADE_LIST=$(pct exec $CTID -- bash -c "apk version -l '<' | tail -n +2" | awk '{print "     - " $1}')
+        UPGRADE_LIST=$(pct exec $CTID -- sh -c "apk version -l '<' | tail -n +2" | awk '{print "     - " $1}')
         
         if [ -n "$UPGRADE_LIST" ]; then
             echo "--------------------------------------------------"
@@ -143,8 +158,14 @@ for CTID in $RUNNING_CT; do
             fi
 
             if [ -n "$COMPOSE_FILES" ]; then
-                echo "$COMPOSE_FILES" | while read -r COMPOSE_PATH; do
+                while IFS= read -r COMPOSE_PATH; do
                     if [ -n "$COMPOSE_PATH" ]; then
+                        # Validate compose file exists
+                        if ! pct exec $CTID -- test -f "$COMPOSE_PATH" &>/dev/null; then
+                            echo "[Docker Warning] Compose file not found: $COMPOSE_PATH. Skipping..."
+                            continue
+                        fi
+
                         echo "--------------------------------------------------"
                         echo "[Docker Stack] Found Project File: $COMPOSE_PATH"
                         echo "--------------------------------------------------"
@@ -153,31 +174,37 @@ for CTID in $RUNNING_CT; do
                             echo "[Docker Stack] Fetching remote manifest data to check for image updates..."
                             
                             # Run pull and capture raw data to show the user exactly what changed
-                            PULL_LOG=$(pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH pull")
-                            
-                            # Filter pull stream to show exactly which container tags fetched new layers
-                            CHANGED_IMAGES=$(echo "$PULL_LOG" | grep -E "Pulling|pulling|Downloaded newer image" | sed 's/^/     /')
-                            
-                            if echo "$PULL_LOG" | grep -qE "Downloaded newer image|Downloaded|pulling|Pulling"; then
-                                echo "[Docker Status] IMAGE LAYER REVISIONS DETECTED:"
-                                echo "$CHANGED_IMAGES"
-                                echo "--------------------------------------------------"
+                            if PULL_LOG=$(pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH pull" 2>&1); then
+                                # Filter pull stream to show exactly which container tags fetched new layers
+                                CHANGED_IMAGES=$(echo "$PULL_LOG" | grep -E "Pulling|pulling|Downloaded newer image" | sed 's/^/     /')
                                 
-                                if confirm_action "Deploy new images and recreate the stack containers?"; then
-                                    echo "[Docker Action] Rebuilding applications with new layers..."
-                                    pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH up -d && docker image prune -f"
+                                if echo "$PULL_LOG" | grep -qE "Downloaded newer image|Downloaded|pulling|Pulling"; then
+                                    echo "[Docker Status] IMAGE LAYER REVISIONS DETECTED:"
+                                    echo "$CHANGED_IMAGES"
+                                    echo "--------------------------------------------------"
+                                    
+                                    if confirm_action "Deploy new images and recreate the stack containers?"; then
+                                        echo "[Docker Action] Rebuilding applications with new layers..."
+                                        pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH up -d && docker image prune -f"
+                                    else
+                                        echo "[Docker Action] Aborted. Active applications left running on existing layers."
+                                    fi
                                 else
-                                    echo "[Docker Action] Aborted. Active applications left running on existing layers."
+                                    echo "[Docker Status] Clean: Local container image layers already match remote repository tags."
                                 fi
                             else
-                                echo "[Docker Status] Clean: Local container image layers already match remote repository tags."
+                                echo "[Docker Error] Failed to pull images from $COMPOSE_PATH"
                             fi
                         else
                             echo "[Docker Action] Auto-Mode: Pulling and deploying stack immediately..."
-                            pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH pull && $COMPOSE_CMD -f $COMPOSE_PATH up -d && docker image prune -f"
+                            if pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH pull && $COMPOSE_CMD -f $COMPOSE_PATH up -d && docker image prune -f"; then
+                                echo "[Docker Action] Successfully deployed stack."
+                            else
+                                echo "[Docker Error] Failed to deploy stack at $COMPOSE_PATH"
+                            fi
                         fi
                     fi
-                done
+                done <<< "$COMPOSE_FILES"
             else
                 echo "[Docker Info] Result: No structured Compose layout configurations tracked inside scan pathways."
             fi
@@ -189,9 +216,15 @@ for CTID in $RUNNING_CT; do
     fi
 
     echo "[Finished] Tasks execution completed for Container ID $CTID."
+    CONTAINERS_PROCESSED=$((CONTAINERS_PROCESSED + 1))
 done
 
 echo ""
 echo "=========================================================================="
-echo " >>> ALL SELECTED TASKS COMPLETED SUCCESSFULLY <<<"
+echo " >>> EXECUTION SUMMARY <<<"
+echo "=========================================================================="
+echo "   Containers Processed:  $CONTAINERS_PROCESSED"
+echo "   Containers Failed:     $CONTAINERS_FAILED"
+echo "=========================================================================="
+echo " >>> ALL SELECTED TASKS COMPLETED <<<"
 echo "=========================================================================="
