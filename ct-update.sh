@@ -54,6 +54,14 @@ confirm_action() {
     fi
 }
 
+# Helper function to check if compose file has services using build
+has_build_services() {
+    local compose_path="$1"
+    local ctid="$2"
+    pct exec $ctid -- bash -c "grep -q 'build:' '$compose_path'" &>/dev/null
+    return $?
+}
+
 for CTID in $RUNNING_CT; do
     # Check if container is reachable
     if ! pct exec $CTID -- true &>/dev/null; then
@@ -170,37 +178,67 @@ for CTID in $RUNNING_CT; do
                         echo "[Docker Stack] Found Project File: $COMPOSE_PATH"
                         echo "--------------------------------------------------"
                         
-                        if [ "$MODE" = "manual" ]; then
-                            echo "[Docker Stack] Fetching remote manifest data to check for image updates..."
+                        # Check if this compose file has services using build (Dockerfile)
+                        if has_build_services "$COMPOSE_PATH" "$CTID"; then
+                            echo "[Docker Stack] Detected services using Dockerfile (build:). Processing locally-built images..."
                             
-                            # Run pull and capture raw data to show the user exactly what changed
-                            if PULL_LOG=$(pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH pull" 2>&1); then
-                                # Filter pull stream to show exactly which container tags fetched new layers
-                                CHANGED_IMAGES=$(echo "$PULL_LOG" | grep -E "Pulling|pulling|Downloaded newer image" | sed 's/^/     /')
+                            if [ "$MODE" = "manual" ]; then
+                                echo "[Docker Stack] Checking for Dockerfile changes and rebuild requirements..."
                                 
-                                if echo "$PULL_LOG" | grep -qE "Downloaded newer image|Downloaded|pulling|Pulling"; then
-                                    echo "[Docker Status] IMAGE LAYER REVISIONS DETECTED:"
-                                    echo "$CHANGED_IMAGES"
-                                    echo "--------------------------------------------------"
-                                    
-                                    if confirm_action "Deploy new images and recreate the stack containers?"; then
-                                        echo "[Docker Action] Rebuilding applications with new layers..."
-                                        pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH up -d && docker image prune -a -f --filter 'until=24h'"
+                                if confirm_action "Rebuild Dockerfile-based images and redeploy the stack?"; then
+                                    echo "[Docker Action] Building and deploying locally-built images..."
+                                    if pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH build --no-cache && $COMPOSE_CMD -f $COMPOSE_PATH up -d && docker image prune -a -f --filter 'until=24h'"; then
+                                        echo "[Docker Action] Successfully rebuilt and deployed stack."
                                     else
-                                        echo "[Docker Action] Aborted. Active applications left running on existing layers."
+                                        echo "[Docker Error] Failed to rebuild and deploy stack at $COMPOSE_PATH"
                                     fi
                                 else
-                                    echo "[Docker Status] Clean: Local container image layers already match remote repository tags."
+                                    echo "[Docker Action] Skipped. No changes made to locally-built images."
                                 fi
                             else
-                                echo "[Docker Error] Failed to pull images from $COMPOSE_PATH"
+                                echo "[Docker Action] Auto-Mode: Rebuilding and deploying stack immediately..."
+                                if pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH build --no-cache && $COMPOSE_CMD -f $COMPOSE_PATH up -d && docker image prune -a -f --filter 'until=24h'"; then
+                                    echo "[Docker Action] Successfully rebuilt and deployed stack."
+                                else
+                                    echo "[Docker Error] Failed to rebuild and deploy stack at $COMPOSE_PATH"
+                                fi
                             fi
                         else
-                            echo "[Docker Action] Auto-Mode: Pulling and deploying stack immediately..."
-                            if pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH pull && $COMPOSE_CMD -f $COMPOSE_PATH up -d && docker image prune -a -f --filter 'until=24h'"; then
-                                echo "[Docker Action] Successfully deployed stack."
+                            # No build services, proceed with pull-based updates
+                            echo "[Docker Stack] No Dockerfile services detected. Checking for remote image updates..."
+                            
+                            if [ "$MODE" = "manual" ]; then
+                                echo "[Docker Stack] Fetching remote manifest data to check for image updates..."
+                                
+                                # Run pull and capture raw data to show the user exactly what changed
+                                if PULL_LOG=$(pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH pull" 2>&1); then
+                                    # Filter pull stream to show exactly which container tags fetched new layers
+                                    CHANGED_IMAGES=$(echo "$PULL_LOG" | grep -E "Pulling|pulling|Downloaded newer image" | sed 's/^/     /')
+                                    
+                                    if echo "$PULL_LOG" | grep -qE "Downloaded newer image|Downloaded|pulling|Pulling"; then
+                                        echo "[Docker Status] IMAGE LAYER REVISIONS DETECTED:"
+                                        echo "$CHANGED_IMAGES"
+                                        echo "--------------------------------------------------"
+                                        
+                                        if confirm_action "Deploy new images and recreate the stack containers?"; then
+                                            echo "[Docker Action] Rebuilding applications with new layers..."
+                                            pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH up -d && docker image prune -a -f --filter 'until=24h'"
+                                        else
+                                            echo "[Docker Action] Aborted. Active applications left running on existing layers."
+                                        fi
+                                    else
+                                        echo "[Docker Status] Clean: Local container image layers already match remote repository tags."
+                                    fi
+                                else
+                                    echo "[Docker Error] Failed to pull images from $COMPOSE_PATH"
+                                fi
                             else
-                                echo "[Docker Error] Failed to deploy stack at $COMPOSE_PATH"
+                                echo "[Docker Action] Auto-Mode: Pulling and deploying stack immediately..."
+                                if pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH pull && $COMPOSE_CMD -f $COMPOSE_PATH up -d && docker image prune -a -f --filter 'until=24h'"; then
+                                    echo "[Docker Action] Successfully deployed stack."
+                                else
+                                    echo "[Docker Error] Failed to deploy stack at $COMPOSE_PATH"
+                                fi
                             fi
                         fi
                     fi
