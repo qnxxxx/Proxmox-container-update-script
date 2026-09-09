@@ -2,11 +2,7 @@
 
 # Default mode
 MODE=""
-
-# Counters for summary
-CONTAINERS_PROCESSED=0
-CONTAINERS_FAILED=0
-CONTAINERS_SKIPPED=0
+SELECTED_CT=""
 
 # Parse arguments
 while [[ "$#" -gt 0 ]]; do
@@ -34,8 +30,54 @@ if [ -z "$MODE" ]; then
 fi
 
 # Fetch all currently running LXC container IDs
-RUNNING_CT=$(pct list | tail -n +2 | awk '$2=="running" {print $1}')
+ALL_RUNNING_CT=$(pct list | tail -n +2 | awk '$2=="running" {print $1}')
 
+# Display available containers
+echo ""
+echo "=================================================="
+echo " Available Running Containers"
+echo "=================================================="
+for CTID in $ALL_RUNNING_CT; do
+    CT_NAME=$(pct config $CTID | grep "hostname:" | awk '{print $2}')
+    echo "   ID: $CTID  Name: $CT_NAME"
+done
+echo "--------------------------------------------------"
+echo " Select containers to update:"
+echo " - Press ENTER for all containers"
+echo " - Enter comma-separated IDs (e.g., 100,102,105)"
+echo "--------------------------------------------------"
+read -p "Enter container IDs or leave blank for all: " container_input
+
+# Process container selection
+if [ -z "$container_input" ]; then
+    # User pressed Enter - use all containers
+    SELECTED_CT=$ALL_RUNNING_CT
+    echo "[Info] Selected: ALL running containers"
+else
+    # User entered specific IDs - validate and use them
+    SELECTED_CT=""
+    IFS=',' read -ra ID_ARRAY <<< "$container_input"
+    
+    for id in "${ID_ARRAY[@]}"; do
+        id=$(echo $id | xargs)  # Trim whitespace
+        
+        # Validate that the ID exists in running containers
+        if echo "$ALL_RUNNING_CT" | grep -q "^$id$"; then
+            SELECTED_CT="$SELECTED_CT $id"
+        else
+            echo "[Warning] Container ID $id not found or not running. Skipping..."
+        fi
+    done
+    
+    if [ -z "$SELECTED_CT" ]; then
+        echo "[Error] No valid containers selected. Exiting."
+        exit 1
+    fi
+    
+    echo "[Info] Selected: $SELECTED_CT"
+fi
+
+echo ""
 echo "=================================================="
 echo " Starting Proxmox LXC Updates in [$MODE] Mode"
 echo "=================================================="
@@ -62,7 +104,11 @@ has_build_services() {
     return $?
 }
 
-for CTID in $RUNNING_CT; do
+# Counters for summary
+CONTAINERS_PROCESSED=0
+CONTAINERS_FAILED=0
+
+for CTID in $SELECTED_CT; do
     # Check if container is reachable
     if ! pct exec $CTID -- true &>/dev/null; then
         echo ""
