@@ -96,13 +96,16 @@ for CTID in $RUNNING_CT; do
         fi
         
         # Check if en_US.UTF-8 locale is generated
-        if ! pct exec $CTID -- locale -a | grep -q "en_US.utf8"; then
+        if ! pct exec $CTID -- locale -a 2>/dev/null | grep -q "en_US.utf8"; then
             echo "[Locale Action] Generating en_US.UTF-8 locale..."
-            pct exec $CTID -- bash -c "locale-gen en_US.UTF-8 && update-locale LANG=en_US.UTF-8" &>/dev/null
+            # Enable en_US.UTF-8 in locale.gen, then generate it
+            pct exec $CTID -- bash -c "sed -i 's/^# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen" &>/dev/null
         fi
         
-        if pct exec $CTID -- locale -a | grep -q "en_US.utf8"; then
+        if pct exec $CTID -- locale -a 2>/dev/null | grep -q "en_US.utf8"; then
             echo "[Locale Status] Locale configuration: OK (en_US.UTF-8 available)"
+        else
+            echo "[Locale Warning] Locale setup attempted but may not be fully available"
         fi
     
     # --- ALPINE LINUX SYSTEM ---
@@ -110,12 +113,12 @@ for CTID in $RUNNING_CT; do
         echo "[Locale Info] Environment: Alpine Linux base detected."
         
         # Check if musl-locales is installed
-        if ! pct exec $CTID -- apk info | grep -q "musl-locales"; then
+        if ! pct exec $CTID -- apk info 2>/dev/null | grep -q "musl-locales"; then
             echo "[Locale Action] Installing locale support for Alpine..."
             pct exec $CTID -- apk add musl-locales &>/dev/null
         fi
         
-        if pct exec $CTID -- apk info | grep -q "musl-locales"; then
+        if pct exec $CTID -- apk info 2>/dev/null | grep -q "musl-locales"; then
             echo "[Locale Status] Locale configuration: OK (musl-locales installed)"
         fi
     else
