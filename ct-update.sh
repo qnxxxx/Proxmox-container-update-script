@@ -81,6 +81,48 @@ for CTID in $RUNNING_CT; do
     echo "=========================================================================="
 
     # ==========================================
+    # 0. LOCALE CONFIGURATION SEGMENT
+    # ==========================================
+    echo "[Locale Info] Check: Detecting locale configuration..."
+    
+    # --- DEBIAN / UBUNTU SYSTEM ---
+    if pct exec $CTID -- which apt-get &>/dev/null; then
+        echo "[Locale Info] Environment: Debian/Ubuntu base detected."
+        
+        # Check if locales package is installed
+        if ! pct exec $CTID -- dpkg -l | grep -q "^ii.*locales"; then
+            echo "[Locale Action] Installing locale support..."
+            pct exec $CTID -- bash -c "export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y locales" &>/dev/null
+        fi
+        
+        # Check if en_US.UTF-8 locale is generated
+        if ! pct exec $CTID -- locale -a | grep -q "en_US.utf8"; then
+            echo "[Locale Action] Generating en_US.UTF-8 locale..."
+            pct exec $CTID -- bash -c "locale-gen en_US.UTF-8 && update-locale LANG=en_US.UTF-8" &>/dev/null
+        fi
+        
+        if pct exec $CTID -- locale -a | grep -q "en_US.utf8"; then
+            echo "[Locale Status] Locale configuration: OK (en_US.UTF-8 available)"
+        fi
+    
+    # --- ALPINE LINUX SYSTEM ---
+    elif pct exec $CTID -- which apk &>/dev/null; then
+        echo "[Locale Info] Environment: Alpine Linux base detected."
+        
+        # Check if musl-locales is installed
+        if ! pct exec $CTID -- apk info | grep -q "musl-locales"; then
+            echo "[Locale Action] Installing locale support for Alpine..."
+            pct exec $CTID -- apk add musl-locales &>/dev/null
+        fi
+        
+        if pct exec $CTID -- apk info | grep -q "musl-locales"; then
+            echo "[Locale Status] Locale configuration: OK (musl-locales installed)"
+        fi
+    else
+        echo "[Locale Warning] Unsupported: Unknown package manager. Skipping locale segment."
+    fi
+
+    # ==========================================
     # 1. CONTAINER OS UPDATE SEGMENT
     # ==========================================
     echo "[OS Info] Check: Detecting package manager..."
