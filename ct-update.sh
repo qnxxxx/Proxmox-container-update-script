@@ -185,7 +185,7 @@ for CTID in $RUNNING_CT; do
                                     
                                     if confirm_action "Deploy new images and recreate the stack containers?"; then
                                         echo "[Docker Action] Rebuilding applications with new layers..."
-                                        pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH up -d && docker image prune -f"
+                                        pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH up -d && docker image prune -a -f --filter 'until=24h'"
                                     else
                                         echo "[Docker Action] Aborted. Active applications left running on existing layers."
                                     fi
@@ -197,7 +197,7 @@ for CTID in $RUNNING_CT; do
                             fi
                         else
                             echo "[Docker Action] Auto-Mode: Pulling and deploying stack immediately..."
-                            if pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH pull && $COMPOSE_CMD -f $COMPOSE_PATH up -d && docker image prune -f"; then
+                            if pct exec $CTID -- bash -c "$COMPOSE_CMD -f $COMPOSE_PATH pull && $COMPOSE_CMD -f $COMPOSE_PATH up -d && docker image prune -a -f --filter 'until=24h'"; then
                                 echo "[Docker Action] Successfully deployed stack."
                             else
                                 echo "[Docker Error] Failed to deploy stack at $COMPOSE_PATH"
