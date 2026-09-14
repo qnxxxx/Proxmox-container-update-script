@@ -15,7 +15,7 @@ SELECTED_CT=$ALL_RUNNING_CT
 LOG_FILE="/var/log/ct-update-cron.log"
 
 # Redirect output to log file
-exec >> "$LOG_FILE" 2>&1
+exec > "$LOG_FILE" 2>&1
 
 echo ""
 echo "=========================================================================="
