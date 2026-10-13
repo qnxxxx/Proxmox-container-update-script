@@ -14,7 +14,7 @@ MODE="auto"
 LOG_FILE="/var/log/ct-update-cron.log"
 
 # Redirect output before running any Proxmox commands so startup errors are logged.
-exec >>"$LOG_FILE" 2>&1
+exec >"$LOG_FILE" 2>&1
 
 PCT="$(command -v pct 2>/dev/null || true)"
 if [[ -z "$PCT" || ! -x "$PCT" ]]; then
