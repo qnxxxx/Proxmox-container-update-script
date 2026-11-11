@@ -39,6 +39,47 @@ mapfile -t SELECTED_CT < <(
 )
 echo "[Info] Running containers found: ${#SELECTED_CT[@]}"
 
+# Try the configured Ubuntu archive first. If it fails and an Ubuntu archive
+# source uses archive.ubuntu.com, switch that source to Princeton's Ubuntu mirror
+# and retry. The source change persists so subsequent apt operations use it too.
+apt_update_with_mirror_fallback() {
+    local ctid="$1"
+    "$PCT" exec "$ctid" -- bash -c '
+        if apt-get update; then
+            exit 0
+        fi
+
+        sources=(/etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources)
+        has_archive=false
+        for source in "${sources[@]}"; do
+            [[ -f "$source" ]] || continue
+            if grep -q "archive\\.ubuntu\\.com/ubuntu" "$source"; then
+                has_archive=true
+                break
+            fi
+        done
+
+        if [[ "$has_archive" != true ]]; then
+            echo "[APT Error] apt-get update failed, and no archive.ubuntu.com Ubuntu source was found to switch."
+            exit 1
+        fi
+
+        echo "[APT Warning] archive.ubuntu.com failed; switching Ubuntu sources to mirror.math.princeton.edu/pub/ubuntu and retrying."
+        for source in "${sources[@]}"; do
+            [[ -f "$source" ]] || continue
+            sed -i "s|archive\\.ubuntu\\.com/ubuntu|mirror.math.princeton.edu/pub/ubuntu|g" "$source"
+        done
+
+        if apt-get update; then
+            echo "[APT Info] Ubuntu mirror fallback succeeded. The source change has been saved."
+            exit 0
+        fi
+
+        echo "[APT Error] apt-get update failed with the fallback mirror as well."
+        exit 1
+    '
+}
+
 has_build_services() {
     local compose_path="$1"
     local ctid="$2"
@@ -71,7 +112,11 @@ for CTID in "${SELECTED_CT[@]}"; do
         echo "[Locale Info] Environment: Debian/Ubuntu base detected."
         if ! "$PCT" exec "$CTID" -- dpkg -l | grep -q '^ii.*locales'; then
             echo "[Locale Action] Installing locale support..."
-            "$PCT" exec "$CTID" -- bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y locales' &>/dev/null
+            if apt_update_with_mirror_fallback "$CTID"; then
+                "$PCT" exec "$CTID" -- bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get install -y locales' &>/dev/null
+            else
+                echo "[Locale Warning] Skipping locale installation because apt indexes could not be refreshed."
+            fi
         fi
         if ! "$PCT" exec "$CTID" -- locale -a 2>/dev/null | grep -q 'en_US.utf8'; then
             echo "[Locale Action] Generating en_US.UTF-8 locale..."
@@ -99,15 +144,18 @@ for CTID in "${SELECTED_CT[@]}"; do
     if "$PCT" exec "$CTID" -- which apt-get &>/dev/null; then
         echo "[OS Info] Environment: Debian/Ubuntu base detected."
         echo "[OS Info] Action: Refreshing remote package indexes..."
-        "$PCT" exec "$CTID" -- apt-get update &>/dev/null
-        UPGRADE_LIST=$("$PCT" exec "$CTID" -- bash -c "apt-get --simulate upgrade | grep -E '^Inst '" | awk '{print "     - " $2 " (" $3 " -> " $4 ")"}')
-        if [[ -n "$UPGRADE_LIST" ]]; then
-            echo "[OS Status] THE FOLLOWING PACKAGES WILL BE UPDATED:"
-            echo "$UPGRADE_LIST"
-            echo "[OS Action] Processing installation..."
-            "$PCT" exec "$CTID" -- bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get dist-upgrade -y && apt-get autoremove -y'
+        if apt_update_with_mirror_fallback "$CTID"; then
+            UPGRADE_LIST=$("$PCT" exec "$CTID" -- bash -c "apt-get --simulate upgrade | grep -E '^Inst '" | awk '{print "     - " $2 " (" $3 " -> " $4 ")"}')
+            if [[ -n "$UPGRADE_LIST" ]]; then
+                echo "[OS Status] THE FOLLOWING PACKAGES WILL BE UPDATED:"
+                echo "$UPGRADE_LIST"
+                echo "[OS Action] Processing installation..."
+                "$PCT" exec "$CTID" -- bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get dist-upgrade -y && apt-get autoremove -y'
+            else
+                echo "[OS Status] Clean: All OS system packages are fully up-to-date."
+            fi
         else
-            echo "[OS Status] Clean: All OS system packages are fully up-to-date."
+            echo "[OS Error] Skipping package upgrade because apt indexes could not be refreshed."
         fi
     elif "$PCT" exec "$CTID" -- which apk &>/dev/null; then
         echo "[OS Info] Environment: Alpine Linux base detected."
